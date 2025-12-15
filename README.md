@@ -20,7 +20,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1Vhh8E5I2mlvSJEdfMjCZ4k
 
 ## Deploy to GitHub Pages
 
-1. Build the production assets into `docs/` (the folder GitHub Pages serves):
-   `npm run build`
-2. Push the changes to `main`. GitHub Pages will serve `docs/index.html` at
-   https://gondatje.github.io/castlerg/.
+This repository deploys through GitHub Actions (see `.github/workflows/deploy.yml`).
+
+1. In the repository **Settings → Pages**, set **Source** to **GitHub Actions** so the built `dist/` bundle is served instead of the raw source files.
+2. Push to `main` or `work` (or run the workflow manually). The action will run `npm run build`, upload `dist/` as the Pages artifact, and publish it at https://gondatje.github.io/castlerg/.
