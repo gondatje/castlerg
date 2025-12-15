@@ -1,9 +1,38 @@
 import React, { useState, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { getDocument, GlobalWorkerOptions, type TextItem } from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-GlobalWorkerOptions.workerSrc = workerSrc;
+type PdfTextItem = { str?: string };
+
+type PdfPage = {
+  getTextContent: () => Promise<{ items: PdfTextItem[] }>;
+};
+
+type PdfDocument = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<PdfPage>;
+};
+
+type PdfjsModule = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: (options: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> };
+};
+
+const workerUrl = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+let pdfjsPromise: Promise<PdfjsModule> | null = null;
+
+const loadPdfjs = () => {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs").then(
+      (module) => {
+        const pdfjs = module as unknown as PdfjsModule;
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+        return pdfjs;
+      },
+    );
+  }
+
+  return pdfjsPromise;
+};
 
 // --- Types ---
 interface ReturningGuest {
@@ -28,15 +57,16 @@ const toPositiveAmount = (value: string | null | undefined) => {
 };
 
 const extractPdfText = async (file: File) => {
+  const pdfjs = await loadPdfjs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
 
   const pageTexts: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const pageText = content.items
-      .map((item) => ("str" in item ? (item as TextItem).str : ""))
+      .map((item) => ("str" in item && item.str ? item.str : ""))
       .join(" ");
     pageTexts.push(pageText);
   }
