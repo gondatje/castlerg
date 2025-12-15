@@ -1,38 +1,6 @@
 import React, { useState, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
-
-type PdfTextItem = { str?: string };
-
-type PdfPage = {
-  getTextContent: () => Promise<{ items: PdfTextItem[] }>;
-};
-
-type PdfDocument = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<PdfPage>;
-};
-
-type PdfjsModule = {
-  GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (options: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> };
-};
-
-const workerUrl = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
-let pdfjsPromise: Promise<PdfjsModule> | null = null;
-
-const loadPdfjs = () => {
-  if (!pdfjsPromise) {
-    pdfjsPromise = import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs").then(
-      (module) => {
-        const pdfjs = module as unknown as PdfjsModule;
-        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-        return pdfjs;
-      },
-    );
-  }
-
-  return pdfjsPromise;
-};
+import { getDocument, type PDFDocumentProxy, type TextItem } from "pdfjs-dist";
 
 // --- Types ---
 interface ReturningGuest {
@@ -57,21 +25,27 @@ const toPositiveAmount = (value: string | null | undefined) => {
 };
 
 const extractPdfText = async (file: File) => {
-  const pdfjs = await loadPdfjs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const pdf: PDFDocumentProxy = await getDocument({ data: arrayBuffer }).promise;
 
-  const pageTexts: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ("str" in item && item.str ? item.str : ""))
-      .join(" ");
-    pageTexts.push(pageText);
+  try {
+    const pageTexts: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((item) => {
+          const textItem = item as TextItem;
+          return textItem?.str ?? "";
+        })
+        .join(" ");
+      pageTexts.push(pageText);
+    }
+
+    return pageTexts.join("\n");
+  } finally {
+    await pdf.destroy?.();
   }
-
-  return pageTexts.join("\n");
 };
 
 const extractAccompanyingGuests = (section: string) => {
@@ -405,8 +379,12 @@ const App = () => {
       setResults(parsedData);
     } catch (err: any) {
       console.error("PDF parsing failed:", err);
-      const message = err?.message ? `Unable to analyze PDF: ${err.message}` : "Unable to analyze PDF.";
-      setError(message);
+      const humanMessage = err?.message && /InvalidPDF/i.test(err.message)
+        ? "We couldn't read that PDF file. Please make sure it's a valid Arrivals PDF and try again."
+        : err?.message
+          ? `Unable to analyze PDF: ${err.message}`
+          : "Unable to analyze PDF.";
+      setError(humanMessage);
     } finally {
       setIsLoading(false);
     }
@@ -423,19 +401,22 @@ const App = () => {
     }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (file.type === "application/pdf") {
-        analyzeFile(file);
-      } else {
-        setError("Please upload a valid PDF file.");
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(false);
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+        const file = e.dataTransfer.files[0];
+        if (file.type === "application/pdf") {
+          analyzeFile(file);
+        } else {
+          setError("Please upload a PDF file to analyze.");
+        }
       }
-    }
-  }, []);
+    },
+    [analyzeFile],
+  );
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
