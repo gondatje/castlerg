@@ -10,6 +10,7 @@ type PdfPage = {
 type PdfDocument = {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PdfPage>;
+  destroy?: () => Promise<void> | void;
 };
 
 type PdfjsModule = {
@@ -17,18 +18,26 @@ type PdfjsModule = {
   getDocument: (options: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> };
 };
 
-const workerUrl = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+const PDFJS_VERSION = "4.10.38";
+const PDFJS_BASE = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build`;
+
+let workerBlobUrl: string | null = null;
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
-const loadPdfjs = () => {
+const loadPdfjs = async () => {
   if (!pdfjsPromise) {
-    pdfjsPromise = import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs").then(
-      (module) => {
-        const pdfjs = module as unknown as PdfjsModule;
-        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-        return pdfjs;
-      },
-    );
+    pdfjsPromise = (async () => {
+      if (!workerBlobUrl) {
+        const workerResponse = await fetch(`${PDFJS_BASE}/pdf.worker.min.mjs`);
+        if (!workerResponse.ok) throw new Error("Failed to load the PDF worker.");
+        const workerBlob = await workerResponse.blob();
+        workerBlobUrl = URL.createObjectURL(workerBlob);
+      }
+
+      const pdfjs = (await import(/* @vite-ignore */ `${PDFJS_BASE}/pdf.mjs`)) as PdfjsModule;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerBlobUrl;
+      return pdfjs;
+    })();
   }
 
   return pdfjsPromise;
@@ -66,11 +75,15 @@ const extractPdfText = async (file: File) => {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const pageText = content.items
-      .map((item) => ("str" in item && item.str ? item.str : ""))
+      .map((item) => {
+        const textItem = item as PdfTextItem;
+        return textItem?.str ?? "";
+      })
       .join(" ");
     pageTexts.push(pageText);
   }
 
+  await pdf.destroy?.();
   return pageTexts.join("\n");
 };
 
@@ -405,8 +418,12 @@ const App = () => {
       setResults(parsedData);
     } catch (err: any) {
       console.error("PDF parsing failed:", err);
-      const message = err?.message ? `Unable to analyze PDF: ${err.message}` : "Unable to analyze PDF.";
-      setError(message);
+      const humanMessage = err?.message && /InvalidPDF/i.test(err.message)
+        ? "We couldn't read that PDF file. Please make sure it's a valid Arrivals PDF and try again."
+        : err?.message
+          ? `Unable to analyze PDF: ${err.message}`
+          : "Unable to analyze PDF.";
+      setError(humanMessage);
     } finally {
       setIsLoading(false);
     }
@@ -423,19 +440,22 @@ const App = () => {
     }
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (file.type === "application/pdf") {
-        analyzeFile(file);
-      } else {
-        setError("Please upload a valid PDF file.");
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(false);
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+        const file = e.dataTransfer.files[0];
+        if (file.type === "application/pdf") {
+          analyzeFile(file);
+        } else {
+          setError("Please upload a PDF file to analyze.");
+        }
       }
-    }
-  }, []);
+    },
+    [analyzeFile],
+  );
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
