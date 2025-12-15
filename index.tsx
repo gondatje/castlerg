@@ -1,47 +1,6 @@
 import React, { useState, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
-
-type PdfTextItem = { str?: string };
-
-type PdfPage = {
-  getTextContent: () => Promise<{ items: PdfTextItem[] }>;
-};
-
-type PdfDocument = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<PdfPage>;
-  destroy?: () => Promise<void> | void;
-};
-
-type PdfjsModule = {
-  GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (options: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> };
-};
-
-const PDFJS_VERSION = "4.10.38";
-const PDFJS_BASE = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build`;
-
-let workerBlobUrl: string | null = null;
-let pdfjsPromise: Promise<PdfjsModule> | null = null;
-
-const loadPdfjs = async () => {
-  if (!pdfjsPromise) {
-    pdfjsPromise = (async () => {
-      if (!workerBlobUrl) {
-        const workerResponse = await fetch(`${PDFJS_BASE}/pdf.worker.min.mjs`);
-        if (!workerResponse.ok) throw new Error("Failed to load the PDF worker.");
-        const workerBlob = await workerResponse.blob();
-        workerBlobUrl = URL.createObjectURL(workerBlob);
-      }
-
-      const pdfjs = (await import(/* @vite-ignore */ `${PDFJS_BASE}/pdf.mjs`)) as PdfjsModule;
-      pdfjs.GlobalWorkerOptions.workerSrc = workerBlobUrl;
-      return pdfjs;
-    })();
-  }
-
-  return pdfjsPromise;
-};
+import { getDocument, type PDFDocumentProxy, type TextItem } from "pdfjs-dist";
 
 // --- Types ---
 interface ReturningGuest {
@@ -66,25 +25,27 @@ const toPositiveAmount = (value: string | null | undefined) => {
 };
 
 const extractPdfText = async (file: File) => {
-  const pdfjs = await loadPdfjs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const pdf: PDFDocumentProxy = await getDocument({ data: arrayBuffer }).promise;
 
-  const pageTexts: string[] = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => {
-        const textItem = item as PdfTextItem;
-        return textItem?.str ?? "";
-      })
-      .join(" ");
-    pageTexts.push(pageText);
+  try {
+    const pageTexts: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((item) => {
+          const textItem = item as TextItem;
+          return textItem?.str ?? "";
+        })
+        .join(" ");
+      pageTexts.push(pageText);
+    }
+
+    return pageTexts.join("\n");
+  } finally {
+    await pdf.destroy?.();
   }
-
-  await pdf.destroy?.();
-  return pageTexts.join("\n");
 };
 
 const extractAccompanyingGuests = (section: string) => {

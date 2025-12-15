@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+          'pdfjs-dist': path.resolve(__dirname, 'pdfjs-dist-shim.ts'),
         }
       }
     };
