@@ -18,3 +18,10 @@ View your app in AI Studio: https://ai.studio/apps/drive/1Vhh8E5I2mlvSJEdfMjCZ4k
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Deploy to GitHub Pages
+
+1. Build the production assets into `docs/` (the folder GitHub Pages serves):
+   `npm run build`
+2. Push the changes to `main`. GitHub Pages will serve `docs/index.html` at
+   https://gondatje.github.io/castlerg/.
