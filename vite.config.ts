@@ -4,8 +4,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+    const repoName = env.GITHUB_REPOSITORY?.split('/')?.pop() || 'castlerg';
     return {
-      base: '/castlerg/',
+      base: mode === 'production' ? `/${repoName}/` : '/',
       build: {
         outDir: 'docs',
       },
