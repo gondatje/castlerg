@@ -1,119 +1,19 @@
 import React, { useState, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { getDocument, type PDFDocumentProxy, type TextItem } from "pdfjs-dist";
+import { GoogleGenAI, Schema, Type } from "@google/genai";
 
 // --- Types ---
 interface ReturningGuest {
   guestName: string;
   confirmationNumber: string;
+  arrivalDate: string;
+  departureDate: string;
   identifiedBy: "Fixed Charge" | "Previous Stays" | "Both";
   numberOfPreviousStays: string | number;
   fixedChargeDescription: string;
   fixedChargeAmount: string;
   accompanyingGuests: string;
 }
-
-// --- Utils ---
-const normalizeWhitespace = (value: string) => value.replace(/\s+/g, " ").trim();
-
-const toPositiveAmount = (value: string | null | undefined) => {
-  if (!value) return "N/A";
-  const match = value.match(/-?\d[\d,]*(?:\.\d+)?/);
-  if (!match) return "N/A";
-  const numeric = Math.abs(parseFloat(match[0].replace(/,/g, "")));
-  return numeric.toFixed(2);
-};
-
-const extractPdfText = async (file: File) => {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf: PDFDocumentProxy = await getDocument({ data: arrayBuffer }).promise;
-
-  try {
-    const pageTexts: string[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = content.items
-        .map((item) => {
-          const textItem = item as TextItem;
-          return textItem?.str ?? "";
-        })
-        .join(" ");
-      pageTexts.push(pageText);
-    }
-
-    return pageTexts.join("\n");
-  } finally {
-    await pdf.destroy?.();
-  }
-};
-
-const extractAccompanyingGuests = (section: string) => {
-  const match = section.match(/Accompanying Guests?\s*[:\-]?\s*([^\n]+?)(?=Confirmation Number|Number of stays|$)/i);
-  if (match && match[1]) {
-    const value = normalizeWhitespace(match[1]);
-    if (value && !/none/i.test(value)) return value;
-  }
-  return "None";
-};
-
-const parseReturningGuests = (text: string): ReturningGuest[] => {
-  const normalized = text.replace(/\r/g, "\n");
-  const sections = normalized.split(/(?=Confirmation Number\s*[:#]?\s*[A-Za-z0-9-]+)/gi);
-
-  const guests: ReturningGuest[] = [];
-
-  for (const section of sections) {
-    const confirmationMatch = section.match(/Confirmation Number\s*[:#]?\s*([A-Za-z0-9-]+)/i);
-    if (!confirmationMatch) continue;
-
-    const confirmationNumber = confirmationMatch[1].trim();
-
-    const nameMatch =
-      section.match(/Primary Guest\s*[:\-]?\s*([^\n]+?)(?=Confirmation Number|Number of stays|Return|$)/i) ||
-      section.match(/Guest Name\s*[:\-]?\s*([^\n]+?)(?=Confirmation Number|Number of stays|Return|$)/i);
-    const guestName = nameMatch ? normalizeWhitespace(nameMatch[1]) : "Unknown Guest";
-
-    const staysMatch = section.match(/Number of stays\s*[:#]?\s*(\d+)/i);
-    const numberOfPreviousStays = staysMatch ? parseInt(staysMatch[1], 10) : 0;
-
-    const fixedChargeRegex = /(Returning? Guest Credit|Return Guest Credit|Return Guest Thank[^\n]*)/i;
-    const fixedChargeMatch = section.match(fixedChargeRegex);
-    const amountMatch = section.match(/Return(?:ing)? Guest[^\d\n]*([-+]?\$?\d[\d,]*(?:\.\d+)?)/i);
-
-    const hasFixedCharge = Boolean(fixedChargeMatch);
-    const hasPreviousStays = numberOfPreviousStays >= 1;
-
-    if (!hasFixedCharge && !hasPreviousStays) continue;
-
-    const identifiedBy: ReturningGuest["identifiedBy"] =
-      hasFixedCharge && hasPreviousStays
-        ? "Both"
-        : hasFixedCharge
-          ? "Fixed Charge"
-          : "Previous Stays";
-
-    const fixedChargeDescription = hasFixedCharge
-      ? normalizeWhitespace(fixedChargeMatch?.[0] || "Return Guest Credit")
-      : "None";
-
-    const fixedChargeAmount = hasFixedCharge ? toPositiveAmount(amountMatch?.[1]) : "N/A";
-
-    const accompanyingGuests = extractAccompanyingGuests(section);
-
-    guests.push({
-      guestName,
-      confirmationNumber,
-      identifiedBy,
-      numberOfPreviousStays: hasPreviousStays ? numberOfPreviousStays : "0",
-      fixedChargeDescription,
-      fixedChargeAmount,
-      accompanyingGuests,
-    });
-  }
-
-  return guests;
-};
 
 // --- Styles ---
 const styles = `
@@ -340,6 +240,15 @@ const GuestCard: React.FC<{ guest: ReturningGuest }> = ({ guest }) => {
       
       <div className="details-grid">
         <div className="detail-item">
+          <span className="detail-label">Arrival</span>
+          <span className="detail-value">{guest.arrivalDate}</span>
+        </div>
+        <div className="detail-item">
+          <span className="detail-label">Departure</span>
+          <span className="detail-value">{guest.departureDate}</span>
+        </div>
+
+        <div className="detail-item">
           <span className="detail-label">Prev. Stays</span>
           <span className="detail-value">{guest.numberOfPreviousStays}</span>
         </div>
@@ -367,24 +276,113 @@ const App = () => {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Local PDF Parsing Logic ---
+  // --- Gemini API Logic ---
   const analyzeFile = async (file: File) => {
     setIsLoading(true);
     setError(null);
     setResults(null);
 
     try {
-      const pdfText = await extractPdfText(file);
-      const parsedData = parseReturningGuests(pdfText);
+      // 1. Convert File to Base64
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+           // remove data:application/pdf;base64, prefix
+           const base64String = (reader.result as string).split(',')[1];
+           resolve(base64String);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      // 2. Prepare Gemini Request
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      // We define the schema to strictly format the output as JSON for the UI
+      const schema: Schema = {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            guestName: { type: Type.STRING },
+            confirmationNumber: { type: Type.STRING },
+            arrivalDate: { type: Type.STRING },
+            departureDate: { type: Type.STRING },
+            identifiedBy: { type: Type.STRING, enum: ["Fixed Charge", "Previous Stays", "Both"] },
+            numberOfPreviousStays: { type: Type.STRING },
+            fixedChargeDescription: { type: Type.STRING },
+            fixedChargeAmount: { type: Type.STRING },
+            accompanyingGuests: { type: Type.STRING },
+          },
+          required: ["guestName", "confirmationNumber", "arrivalDate", "departureDate", "identifiedBy", "numberOfPreviousStays", "fixedChargeDescription", "fixedChargeAmount", "accompanyingGuests"],
+        },
+      };
+
+      const systemPrompt = `
+        You are an intelligent document-analysis assistant.
+        Your task is to identify all returning guests from the provided "Castle Hot Springs Arrivals Detailed" PDF.
+        
+        PRIMARY GOAL
+        Identify guests who are returning guests using either:
+        1) A Fixed Charge that explicitly indicates a return guest (e.g., "Return Guest", "Return Guest Credit", "RG").
+        2) A Previous Stays / Number of Stays value of 1 or greater.
+
+        If either is true, the guest is a Returning Guest.
+
+        DATA TO EXTRACT (For each returning guest):
+        - Primary Guest Name (Preserve exact spelling, Last, First)
+        - Confirmation Number
+        - Arrival Date (e.g. MM/DD/YY)
+        - Departure Date (e.g. MM/DD/YY)
+        - Returning Guest Identified By: "Fixed Charge", "Previous Stays", or "Both"
+        - Number of Previous Stays: Numeric value or "N/A"
+        - Fixed Charge Description: 
+          **STRICT FILTER:** Only include description if it contains "Return Guest", "RG", or "Return Guest Credit". 
+          If the description is "1185 Return Guest Thank", extract it as "Return Guest Credit".
+          If the fixed charge is NOT related to Return Guest (e.g. "Amenity", "Package", "Parking"), set this to "None".
+        - Fixed Charge Amount: Amount or "N/A". 
+          **IMPORTANT RULE: Always extract as a positive number (e.g. convert -100.00 to 100.00). Remove any negative signs.**
+          If Fixed Charge Description is "None" (due to filtering), set Amount to "N/A".
+        - Accompanying Guest(s): Full name(s) or "None"
+
+        INTERPRETATION RULES:
+        - Do not infer missing data.
+        - Treat each reservation independently.
+        - If "Prev. Stays" is blank/missing, assume 0/N/A unless Fixed Charge is present.
+      `;
+
+      // 3. Call API
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            parts: [
+              { text: systemPrompt },
+              {
+                inlineData: {
+                  mimeType: file.type,
+                  data: base64Data
+                }
+              }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: schema,
+        }
+      });
+
+      // 4. Parse Response
+      const jsonText = response.text;
+      if (!jsonText) throw new Error("No data returned from AI");
+      
+      const parsedData = JSON.parse(jsonText);
       setResults(parsedData);
+
     } catch (err: any) {
-      console.error("PDF parsing failed:", err);
-      const humanMessage = err?.message && /InvalidPDF/i.test(err.message)
-        ? "We couldn't read that PDF file. Please make sure it's a valid Arrivals PDF and try again."
-        : err?.message
-          ? `Unable to analyze PDF: ${err.message}`
-          : "Unable to analyze PDF.";
-      setError(humanMessage);
+      console.error(err);
+      setError("Failed to analyze the file. Please ensure it is a valid PDF and try again.");
     } finally {
       setIsLoading(false);
     }
@@ -401,22 +399,19 @@ const App = () => {
     }
   }, []);
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragActive(false);
-      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-        const file = e.dataTransfer.files[0];
-        if (file.type === "application/pdf") {
-          analyzeFile(file);
-        } else {
-          setError("Please upload a PDF file to analyze.");
-        }
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.type === "application/pdf") {
+        analyzeFile(file);
+      } else {
+        setError("Please upload a valid PDF file.");
       }
-    },
-    [analyzeFile],
-  );
+    }
+  }, []);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {

@@ -15,12 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/drive/1Vhh8E5I2mlvSJEdfMjCZ4k
 
 1. Install dependencies:
    `npm install`
-2. Run the app:
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
    `npm run dev`
-
-## Deploy to GitHub Pages
-
-This repository deploys through GitHub Actions (see `.github/workflows/deploy.yml`).
-
-1. In the repository **Settings → Pages**, set **Source** to **GitHub Actions** so the built `dist/` bundle is served instead of the raw source files.
-2. Push to `main` or `work` (or run the workflow manually). The action will run `npm run build`, upload `dist/` as the Pages artifact, and publish it at https://gondatje.github.io/castlerg/.
